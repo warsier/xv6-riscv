@@ -159,11 +159,19 @@ kerneltrap()
   w_sstatus(sstatus);
 }
 
+uint64 prev_time = 0;
+uint64 cur_time = 0;
+
 void
 clockintr()
 {
   acquire(&tickslock);
   ticks++;
+
+  cur_time = *(uint64*)CLINT_MTIME;
+  printf("cur time = %d; interval = %d.\n", cur_time, cur_time - prev_time);
+  prev_time = cur_time;
+
   wakeup(&ticks);
   release(&tickslock);
 }

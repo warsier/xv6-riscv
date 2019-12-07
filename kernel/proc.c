@@ -20,6 +20,8 @@ static void wakeup1(struct proc *chan);
 
 extern char trampoline[]; // trampoline.S
 
+const int BASE_TICK = 1000000;
+
 void
 procinit(void)
 {
@@ -119,6 +121,7 @@ found:
   memset(&p->context, 0, sizeof p->context);
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+  p->tick = BASE_TICK;
 
   return p;
 }
@@ -143,6 +146,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->tick = BASE_TICK;
 }
 
 // Create a page table for a given process,
@@ -431,6 +435,16 @@ wait(uint64 addr)
   }
 }
 
+// change tick interval
+extern uint64 mscratch0[NCPU * 32];
+inline void
+settick(int tick)
+{
+  uint64 *scratch = &mscratch0[0];
+  scratch[5] = tick;
+  // printf("%d\n", scratch[5]);
+}
+
 // Per-CPU process scheduler.
 // Each CPU calls scheduler() after setting itself up.
 // Scheduler never returns.  It loops, doing:
@@ -445,13 +459,19 @@ scheduler(void)
   struct cpu *c = mycpu();
   
   c->proc = 0;
+  const int tick_max = 10 * BASE_TICK;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
+    int found_runnable = 0;
 
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
+        found_runnable = 1;
+        settick(p->tick);
+        uint64 start_time = *(uint64*)CLINT_MTIME;
+
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it
         // before jumping back to us.
@@ -462,8 +482,33 @@ scheduler(void)
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
+        uint64 end_time = *(uint64*)CLINT_MTIME;
+        int duration = end_time - start_time;
+        if(duration >= 9 * p->tick / 10) {
+          if (p->tick < BASE_TICK) {
+            printf("prev tick = %d, ", p->tick);
+            p->tick = BASE_TICK;
+          }
+          else if (p->tick < tick_max) {
+            printf("prev tick = %d, ", p->tick);
+            p->tick += BASE_TICK;
+          }
+        }
+        else if (duration < p->tick / 10) {
+          printf("prev tick = %d, ", p->tick);
+          p->tick /= 10;
+        }
+        printf("time used by proc %d = %d, new tick = %d.\n", p->pid, duration, p->tick);
       }
       release(&p->lock);
+    }
+
+    // if idle
+    if (!found_runnable) {
+        settick(tick_max);
+    }
+    else {
+      settick(BASE_TICK);
     }
   }
 }
